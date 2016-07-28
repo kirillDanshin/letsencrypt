@@ -19,8 +19,7 @@ import (
 	"io/ioutil"
 	"log"
 	"math/big"
-	"net"
-	"net/http"
+
 	"os"
 	"strings"
 	"sync"
@@ -48,53 +47,6 @@ type Manager struct {
 	certCache    map[string]*cacheEntry
 	certTokens   map[string]*tls.Certificate
 	watchChan    chan struct{}
-}
-
-// Serve runs an HTTP/HTTPS web server using TLS certificates obtained by the manager.
-// The HTTP server redirects all requests to the HTTPS server.
-// The HTTPS server obtains TLS certificates as needed and responds to requests
-// by invoking http.DefaultServeMux.
-//
-// Serve does not return unitil the HTTPS server fails to start or else stops.
-// Either way, Serve can only return a non-nil error, never nil.
-func (m *Manager) Serve() error {
-	l, err := net.Listen("tcp", ":http")
-	if err != nil {
-		return err
-	}
-	defer l.Close()
-	go http.Serve(l, http.HandlerFunc(RedirectHTTP))
-
-	return m.ServeHTTPS()
-}
-
-// ServeHTTPS runs an HTTPS web server using TLS certificates obtained by the manager.
-// The HTTPS server obtains TLS certificates as needed and responds to requests
-// by invoking http.DefaultServeMux.
-// ServeHTTPS does not return unitil the HTTPS server fails to start or else stops.
-// Either way, ServeHTTPS can only return a non-nil error, never nil.
-func (m *Manager) ServeHTTPS() error {
-	srv := &http.Server{
-		Addr: ":https",
-		TLSConfig: &tls.Config{
-			GetCertificate: m.GetCertificate,
-		},
-	}
-	return srv.ListenAndServeTLS("", "")
-}
-
-// RedirectHTTP is an HTTP handler (suitable for use with http.HandleFunc)
-// that responds to all requests by redirecting to the same URL served over HTTPS.
-// It should only be invoked for requests received over HTTP.
-func RedirectHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.TLS != nil || r.Host == "" {
-		http.Error(w, "not found", 404)
-	}
-
-	u := r.URL
-	u.Host = r.Host
-	u.Scheme = "https"
-	http.Redirect(w, r, u.String(), 302)
 }
 
 // state is the serializable state for the Manager.
@@ -258,6 +210,10 @@ func (m *Manager) register(email string, prompt func(string) bool) error {
 	}
 
 	c, err := acme.NewClient(letsEncryptURL, &m.state, acme.EC256)
+	//
+	log.SetOutput(ioutil.Discard) // disable the logger
+	acme.Logger = nil
+	//
 	if err != nil {
 		return fmt.Errorf("create client: %v", err)
 	}
@@ -629,7 +585,7 @@ type tlsProvider struct {
 }
 
 func (p tlsProvider) Present(domain, token, keyAuth string) error {
-	cert, dom, err := acme.TLSSNI01ChallengeCertDomain(keyAuth)
+	cert, dom, err := acme.TLSSNI01ChallengeCert(keyAuth)
 	if err != nil {
 		return err
 	}
@@ -642,7 +598,7 @@ func (p tlsProvider) Present(domain, token, keyAuth string) error {
 }
 
 func (p tlsProvider) CleanUp(domain, token, keyAuth string) error {
-	_, dom, err := acme.TLSSNI01ChallengeCertDomain(keyAuth)
+	_, dom, err := acme.TLSSNI01ChallengeCert(keyAuth)
 	if err != nil {
 		return err
 	}
