@@ -2,148 +2,6 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Package letsencrypt obtains TLS certificates from LetsEncrypt.org.
-//
-// LetsEncrypt.org is a service that issues free SSL/TLS certificates to servers
-// that can prove control over the given domain's DNS records or
-// the servers pointed at by those records.
-//
-// Quick Start
-//
-// A complete HTTP/HTTPS web server using TLS certificates from LetsEncrypt.org,
-// redirecting all HTTP access to HTTPS, and maintaining TLS certificates in a file
-// letsencrypt.cache across server restarts.
-//
-//	package main
-//
-//	import (
-//		"fmt"
-//		"log"
-//		"net/http"
-//		"rsc.io/letsencrypt"
-//	)
-//
-//	func main() {
-//		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-//			fmt.Fprintf(w, "Hello, TLS!\n")
-//		})
-//		var m letsencrypt.Manager
-//		if err := m.CacheFile("letsencrypt.cache"); err != nil {
-//			log.Fatal(err)
-//		}
-//		log.Fatal(m.Serve())
-//	}
-//
-// Overview
-//
-// The fundamental type in this package is the Manager, which
-// manages obtaining and refreshing a collection of TLS certificates,
-// typically for use by an HTTPS server.
-// The example above shows the most basic use of a Manager.
-// The use can be customized by calling additional methods of the Manager.
-//
-// Registration
-//
-// A Manager m registers anonymously with LetsEncrypt.org, including agreeing to
-// the letsencrypt.org terms of service, the first time it needs to obtain a certificate.
-// To register with a particular email address and with the option of a
-// prompt for agreement with the terms of service, call m.Register.
-//
-// GetCertificate
-//
-// The Manager's GetCertificate method returns certificates
-// from the Manager's cache, filling the cache by requesting certificates
-// from LetsEncrypt.org. In this way, a server with a tls.Config.GetCertificate
-// set to m.GetCertificate will demand load a certificate for any host name
-// it serves. To force loading of certificates ahead of time, install m.GetCertificate
-// as before but then call m.Cert for each host name.
-//
-// A Manager can only obtain a certificate for a given host name if it can prove
-// control of that host name to LetsEncrypt.org. By default it proves control by
-// answering an HTTPS-based challenge: when
-// the LetsEncrypt.org servers connect to the named host on port 443 (HTTPS),
-// the TLS SNI handshake must use m.GetCertificate to obtain a per-host certificate.
-// The most common way to satisfy this requirement is for the host name to
-// resolve to the IP address of a (single) computer running m.ServeHTTPS,
-// or at least running a Go TLS server with tls.Config.GetCertificate set to m.GetCertificate.
-// However, other configurations are possible. For example, a group of machines
-// could use an implementation of tls.Config.GetCertificate that cached
-// certificates but handled cache misses by making RPCs to a Manager m
-// on an elected leader machine.
-//
-// In typical usage, then, the setting of tls.Config.GetCertificate to m.GetCertificate
-// serves two purposes: it provides certificates to the TLS server for ordinary serving,
-// and it also answers challenges to prove ownership of the domains in order to
-// obtain those certificates.
-//
-// To force the loading of a certificate for a given host into the Manager's cache,
-// use m.Cert.
-//
-// Persistent Storage
-//
-// If a server always starts with a zero Manager m, the server effectively fetches
-// a new certificate for each of its host name from LetsEncrypt.org on each restart.
-// This is unfortunate both because the server cannot start if LetsEncrypt.org is
-// unavailable and because LetsEncrypt.org limits how often it will issue a certificate
-// for a given host name (at time of writing, the limit is 5 per week for a given host name).
-// To save server state proactively to a cache file and to reload the server state from
-// that same file when creating a new manager, call m.CacheFile with the name of
-// the file to use.
-//
-// For alternate storage uses, m.Marshal returns the current state of the Manager
-// as an opaque string, m.Unmarshal sets the state of the Manager using a string
-// previously returned by m.Marshal (usually a different m), and m.Watch returns
-// a channel that receives notifications about state changes.
-//
-// Limits
-//
-// To avoid hitting basic rate limits on LetsEncrypt.org, a given Manager limits all its
-// interactions to at most one request every minute, with an initial allowed burst of
-// 20 requests.
-//
-// By default, if GetCertificate is asked for a certificate it does not have, it will in turn
-// ask LetsEncrypt.org for that certificate. This opens a potential attack where attackers
-// connect to a server by IP address and pretend to be asking for an incorrect host name.
-// Then GetCertificate will attempt to obtain a certificate for that host, incorrectly,
-// eventually hitting LetsEncrypt.org's rate limit for certificate requests and making it
-// impossible to obtain actual certificates. Because servers hold certificates for months
-// at a time, however, an attack would need to be sustained over a time period
-// of at least a month in order to cause real problems.
-//
-// To mitigate this kind of attack, a given Manager limits
-// itself to an average of one certificate request for a new host every three hours,
-// with an initial allowed burst of up to 20 requests.
-// Long-running servers will therefore stay
-// within the LetsEncrypt.org limit of 300 failed requests per month.
-// Certificate refreshes are not subject to this limit.
-//
-// To eliminate the attack entirely, call m.SetHosts to enumerate the exact set
-// of hosts that are allowed in certificate requests.
-//
-// Web Servers
-//
-// The basic requirement for use of a Manager is that there be an HTTPS server
-// running on port 443 and calling m.GetCertificate to obtain TLS certificates.
-// Using standard primitives, the way to do this is:
-//
-//	srv := &http.Server{
-//		Addr: ":https",
-//		TLSConfig: &tls.Config{
-//			GetCertificate: m.GetCertificate,
-//		},
-//	}
-//	srv.ListenAndServeTLS("", "")
-//
-// However, this pattern of serving HTTPS with demand-loaded TLS certificates
-// comes up enough to wrap into a single method m.ServeHTTPS.
-//
-// Similarly, many HTTPS servers prefer to redirect HTTP clients to the HTTPS URLs.
-// That functionality is provided by RedirectHTTP.
-//
-// The combination of serving HTTPS with demand-loaded TLS certificates and
-// serving HTTPS redirects to HTTP clients is provided by m.Serve, as used in
-// the original example above.
-//
 package letsencrypt
 
 import (
@@ -151,13 +9,16 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -508,6 +369,10 @@ func (m *Manager) GetCertificate(clientHello *tls.ClientHelloInfo) (*tls.Certifi
 		return cert, nil
 	}
 
+	if host == "" {
+		host = localhost
+	}
+
 	return m.Cert(host)
 }
 
@@ -551,19 +416,29 @@ func (m *Manager) Cert(host string) (*tls.Certificate, error) {
 	// Otherwise look in our cert cache.
 	entry, ok := m.certCache[host]
 	if !ok {
-		r := m.rateLimit.Reserve()
-		ok := r.OK()
-		if ok {
-			ok = m.newHostLimit.Allow()
-			if !ok {
-				r.Cancel()
+		if host == localhost {
+			c, err := m.certSelfSigned()
+			if err != nil {
+				return nil, err
 			}
+
+			entry = &cacheEntry{host: host, m: m, cert: c}
+		} else {
+			r := m.rateLimit.Reserve()
+			ok := r.OK()
+			if ok {
+				ok = m.newHostLimit.Allow()
+				if !ok {
+					r.Cancel()
+				}
+			}
+			if !ok {
+				m.mu.Unlock()
+				return nil, fmt.Errorf("rate limited")
+			}
+			entry = &cacheEntry{host: host, m: m}
 		}
-		if !ok {
-			m.mu.Unlock()
-			return nil, fmt.Errorf("rate limited")
-		}
-		entry = &cacheEntry{host: host, m: m}
+
 		m.certCache[host] = entry
 	}
 	m.mu.Unlock()
@@ -574,7 +449,60 @@ func (m *Manager) Cert(host string) (*tls.Certificate, error) {
 	if entry.err != nil {
 		return nil, entry.err
 	}
+
 	return entry.cert, nil
+}
+
+const localhost = "localhost"
+
+func (m *Manager) certSelfSigned() (*tls.Certificate, error) {
+	priv, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		return nil, err
+	}
+
+	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate serial number: %s", err)
+	}
+
+	template := &x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			Organization: []string{"Acme Co"},
+		},
+
+		NotBefore: time.Now(),
+		NotAfter:  time.Now().AddDate(0, 1, 0),
+
+		DNSNames: []string{"localhost"},
+
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+
+	cert, err := x509.CreateCertificate(rand.Reader, template, template, &priv.PublicKey, priv)
+	if err != nil {
+		return nil, err
+	}
+
+	if m.state.Certs == nil {
+		m.state.Certs = make(map[string]stateCert)
+	}
+
+	m.state.Certs[localhost] = stateCert{
+		Cert: encodePEM(cert),
+		Key:  encodePEM(priv),
+	}
+
+	m.updated()
+
+	return &tls.Certificate{
+		Certificate: [][]byte{cert},
+		PrivateKey:  priv,
+	}, nil
 }
 
 func (e *cacheEntry) init() {
@@ -651,6 +579,7 @@ func (m *Manager) verify(host string) (cert *tls.Certificate, refreshTime time.T
 		err = fmt.Errorf("%v", errmap)
 		return
 	}
+
 	entryCert := stateCert{
 		Cert: string(acmeCert.Certificate),
 		Key:  string(acmeCert.PrivateKey),
@@ -750,4 +679,21 @@ func unmarshalKey(text string) (*ecdsa.PrivateKey, error) {
 
 func newKey() (*ecdsa.PrivateKey, error) {
 	return ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+}
+
+func encodePEM(data interface{}) string {
+	b := &pem.Block{}
+	switch key := data.(type) {
+	case *ecdsa.PrivateKey:
+		b.Type = "EC PRIVATE KEY"
+		b.Bytes, _ = x509.MarshalECPrivateKey(key)
+	case *rsa.PrivateKey:
+		b.Type = "RSA PRIVATE KEY"
+		b.Bytes = x509.MarshalPKCS1PrivateKey(key)
+	case []byte:
+		b.Type = "CERTIFICATE"
+		b.Bytes = data.([]byte)
+	}
+
+	return string(pem.EncodeToMemory(b))
 }
