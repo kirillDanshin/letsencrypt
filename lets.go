@@ -28,7 +28,7 @@ import (
 	"golang.org/x/net/context"
 	"golang.org/x/time/rate"
 
-	"github.com/xenolf/lego/acme"
+	"github.com/iris-contrib/lego/acme"
 )
 
 const letsEncryptURL = "https://acme-v01.api.letsencrypt.org/directory"
