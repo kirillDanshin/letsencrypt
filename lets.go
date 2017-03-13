@@ -28,7 +28,7 @@ import (
 	"golang.org/x/net/context"
 	"golang.org/x/time/rate"
 
-	"github.com/iris-contrib/lego/acme"
+	"github.com/xenolf/lego/acme"
 )
 
 const letsEncryptURL = "https://acme-v01.api.letsencrypt.org/directory"
@@ -245,7 +245,9 @@ func (m *Manager) register(email string, prompt func(string) bool) error {
 // Consequently, the state should be kept private.
 func (m *Manager) Marshal() string {
 	m.init()
+	m.mu.Lock()
 	js, err := json.MarshalIndent(&m.state, "", "\t")
+	m.mu.Unlock()
 	if err != nil {
 		panic("unexpected json.Marshal failure")
 	}
@@ -267,7 +269,9 @@ func (m *Manager) Unmarshal(enc string) error {
 		}
 		st.key = key
 	}
+	m.mu.Lock()
 	m.state = st
+	m.mu.Unlock()
 	for host, cert := range m.state.Certs {
 		c, err := cert.toTLS()
 		if err != nil {
@@ -527,7 +531,7 @@ func (m *Manager) verify(host string) (cert *tls.Certificate, refreshTime time.T
 	}
 	c.SetChallengeProvider(acme.TLSSNI01, tlsProvider{m})
 	c.ExcludeChallenges([]acme.Challenge{acme.HTTP01})
-	acmeCert, errmap := c.ObtainCertificate([]string{host}, true, nil)
+	acmeCert, errmap := c.ObtainCertificate([]string{host}, true, nil, true)
 	if len(errmap) > 0 {
 		if debug {
 			log.Printf("ObtainCertificate %v => %v", host, errmap)
@@ -545,7 +549,6 @@ func (m *Manager) verify(host string) (cert *tls.Certificate, refreshTime time.T
 		if debug {
 			log.Printf("ObtainCertificate %v toTLS failure: %v", host, err)
 		}
-		err = err
 		return
 	}
 	if refreshTime, err = certRefreshTime(cert); err != nil {
